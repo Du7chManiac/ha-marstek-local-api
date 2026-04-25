@@ -13,7 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import MarstekAPIError, MarstekUDPClient
-from .compatibility import CompatibilityMatrix
+from .compatibility import CompatibilityMatrix, get_base_model
 from .const import (
     COMMAND_MAX_ATTEMPTS,
     COMMAND_TIMEOUT,
@@ -540,8 +540,10 @@ class MarstekDataUpdateCoordinator(DataUpdateCoordinator):
                 except Exception as err:
                     _LOGGER.debug("Failed to get EM status: %s", err)
 
-                # Only query PV for Venus D
-                if self.device_model == DEVICE_MODEL_VENUS_D:
+                # Only query PV for Venus D. Compare against the canonical
+                # model name — firmware reports "Venus D" (with space) on
+                # some units, which would never match the constant directly.
+                if get_base_model(self.device_model) == DEVICE_MODEL_VENUS_D:
                     try:
                         await asyncio.sleep(_command_delay())  # Delay between API calls
                         pv_status = await self.api.get_pv_status(**_command_kwargs())

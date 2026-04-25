@@ -26,6 +26,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .compatibility import get_base_model
 from .const import DATA_COORDINATOR, DEVICE_MODEL_VENUS_D, DOMAIN
 from .coordinator import MarstekDataUpdateCoordinator, MarstekMultiDeviceCoordinator
 
@@ -572,7 +573,7 @@ async def async_setup_entry(
                 )
 
             # Add PV sensors if Venus D
-            if device_coordinator.device_model == DEVICE_MODEL_VENUS_D:
+            if get_base_model(device_coordinator.device_model) == DEVICE_MODEL_VENUS_D:
                 for description in PV_SENSOR_TYPES:
                     entities.append(
                         MarstekMultiDeviceSensor(
@@ -612,7 +613,7 @@ async def async_setup_entry(
             )
 
         # Add PV sensors if Venus D
-        if coordinator.device_model == DEVICE_MODEL_VENUS_D:
+        if get_base_model(coordinator.device_model) == DEVICE_MODEL_VENUS_D:
             for description in PV_SENSOR_TYPES:
                 entities.append(
                     MarstekSensor(

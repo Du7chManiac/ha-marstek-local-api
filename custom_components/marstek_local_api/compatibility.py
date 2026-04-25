@@ -64,18 +64,22 @@ def parse_hardware_version(device_model: str) -> str:
 
 
 def get_base_model(device_model: str) -> str:
-    """Get base model name without hardware version suffix.
+    """Get base model name without hardware version suffix or whitespace.
 
     Examples:
         "VenusE 3.0" -> "VenusE"
         "VenusE" -> "VenusE"
         "VenusD" -> "VenusD"
+        "Venus D" -> "VenusD"   (firmware reports the model with a space)
     """
     if not device_model:
         return ""
 
-    # Remove version suffix
-    return re.sub(r'\s+\d+\.\d+.*$', '', device_model)
+    # Drop a "<base> <ver>" suffix like "VenusE 3.0" first.
+    stripped = re.sub(r'\s+\d+\.\d+.*$', '', device_model)
+    # Then collapse intra-name whitespace ("Venus D" -> "VenusD") so all
+    # downstream lookups can use a single canonical spelling.
+    return re.sub(r'\s+', '', stripped)
 
 
 class CompatibilityMatrix:
@@ -88,68 +92,80 @@ class CompatibilityMatrix:
     # ============================================================================
     # SCALING MATRIX
     # ============================================================================
-    # Format: {field_name: {(hw_version, fw_version): divisor}}
+    # Format: {field_name: {(base_model, hw_version, fw_version): divisor}}
+    #
+    # base_model is None for entries that apply to every model on the given
+    # hardware version. A model-specific entry (e.g. "VenusD") wins over the
+    # wildcard when both are applicable.
     #
     # The raw API value is DIVIDED by the divisor to get the final value.
     # Firmware version means "from this version onwards".
     # Lookup finds the highest firmware version <= actual device firmware.
     # ============================================================================
 
-    SCALING_MATRIX: dict[str, dict[tuple[str, int], float]] = {
+    SCALING_MATRIX: dict[str, dict[tuple[str | None, str, int], float]] = {
         # Battery temperature (°C)
         "bat_temp": {
-            (HW_VERSION_2, 0): 1.0,      # FW 0-153: raw value in °C
-            (HW_VERSION_2, 154): 0.1,    # FW 154+: raw value in deci-°C (÷0.1 = ×10)
-            (HW_VERSION_3, 0): 1.0,      # FW 0+: raw value in °C
-            (HW_VERSION_3, 139): 10.0,   # FW 0+: raw value in deca-°C (÷10)
+            (None, HW_VERSION_2, 0): 1.0,      # FW 0-153: raw value in °C
+            (None, HW_VERSION_2, 154): 0.1,    # FW 154+: raw value in deci-°C (÷0.1 = ×10)
+            (None, HW_VERSION_3, 0): 1.0,      # FW 0+: raw value in °C
+            (None, HW_VERSION_3, 139): 10.0,   # FW 0+: raw value in deca-°C (÷10)
         },
 
-        # Battery capacity (Wh)
+        # Battery remaining capacity from Bat.GetStatus, [Wh] per spec.
         "bat_capacity": {
-            (HW_VERSION_2, 0): 100.0,    # FW 0-153: raw value in centi-Wh (÷100)
-            (HW_VERSION_2, 154): 1.0,    # FW 154+: raw value in Wh
-            (HW_VERSION_3, 0): 1.0,      # FW 0+: raw value in Wh
-            (HW_VERSION_3, 139): 0.1,      # FW 0+: raw value in deci-Wh (÷0.1)
+            (None, HW_VERSION_2, 0): 100.0,    # FW 0-153: raw value in centi-Wh (÷100)
+            (None, HW_VERSION_2, 154): 1.0,    # FW 154+: raw value in Wh
+            (None, HW_VERSION_3, 0): 1.0,      # FW 0+: raw value in Wh
+            (None, HW_VERSION_3, 139): 0.1,    # FW 0+: raw value in deci-Wh (÷0.1)
+            # Venus D reports Wh directly (verified on FW 147; matches the
+            # published API spec, which says the field is already in Wh).
+            ("VenusD", HW_VERSION_2, 0): 1.0,
         },
 
         # Battery power (W)
         "bat_power": {
-            (HW_VERSION_2, 0): 10.0,     # FW 0-153: raw value in deca-W (÷10)
-            (HW_VERSION_2, 154): 1.0,    # FW 154+: raw value in W
-            (HW_VERSION_3, 0): 1.0,      # FW 0+: raw value in W
+            (None, HW_VERSION_2, 0): 10.0,     # FW 0-153: raw value in deca-W (÷10)
+            (None, HW_VERSION_2, 154): 1.0,    # FW 154+: raw value in W
+            (None, HW_VERSION_3, 0): 1.0,      # FW 0+: raw value in W
+            # Venus D reports W directly (matches spec).
+            ("VenusD", HW_VERSION_2, 0): 1.0,
         },
 
-        # Grid import energy (Wh)
+        # Grid import energy from ES.GetStatus, [Wh] per spec.
         "total_grid_input_energy": {
-            (HW_VERSION_2, 0): 0.1,      # FW 0-153: raw × 10 = Wh (÷0.1)
-            (HW_VERSION_2, 154): 0.01,   # FW 154+: raw × 100 = Wh (÷0.01)
-            (HW_VERSION_3, 0): 1.0,      # FW 0+: raw value in Wh
+            (None, HW_VERSION_2, 0): 0.1,      # FW 0-153: raw × 10 = Wh (÷0.1)
+            (None, HW_VERSION_2, 154): 0.01,   # FW 154+: raw × 100 = Wh (÷0.01)
+            (None, HW_VERSION_3, 0): 1.0,      # FW 0+: raw value in Wh
+            ("VenusD", HW_VERSION_2, 0): 1.0,
         },
 
-        # Grid export energy (Wh)
+        # Grid export energy from ES.GetStatus, [Wh] per spec.
         "total_grid_output_energy": {
-            (HW_VERSION_2, 0): 0.1,      # FW 0-153: raw × 10 = Wh (÷0.1)
-            (HW_VERSION_2, 154): 0.01,   # FW 154+: raw × 100 = Wh (÷0.01)
-            (HW_VERSION_3, 0): 1.0,      # FW 0+: raw value in Wh
+            (None, HW_VERSION_2, 0): 0.1,      # FW 0-153: raw × 10 = Wh (÷0.1)
+            (None, HW_VERSION_2, 154): 0.01,   # FW 154+: raw × 100 = Wh (÷0.01)
+            (None, HW_VERSION_3, 0): 1.0,      # FW 0+: raw value in Wh
+            ("VenusD", HW_VERSION_2, 0): 1.0,
         },
 
-        # Load energy (Wh)
+        # Load energy from ES.GetStatus, [Wh] per spec.
         "total_load_energy": {
-            (HW_VERSION_2, 0): 0.1,      # FW 0-153: raw × 10 = Wh (÷0.1)
-            (HW_VERSION_2, 154): 0.01,   # FW 154+: raw × 100 = Wh (÷0.01)
-            (HW_VERSION_3, 0): 1.0,      # FW 0+: raw value in Wh
+            (None, HW_VERSION_2, 0): 0.1,      # FW 0-153: raw × 10 = Wh (÷0.1)
+            (None, HW_VERSION_2, 154): 0.01,   # FW 154+: raw × 100 = Wh (÷0.01)
+            (None, HW_VERSION_3, 0): 1.0,      # FW 0+: raw value in Wh
+            ("VenusD", HW_VERSION_2, 0): 1.0,
         },
 
         # Battery voltage (V) - ALWAYS scaled by 100
         "bat_voltage": {
-            (HW_VERSION_2, 0): 100.0,    # All FW: raw in centi-V (÷100)
-            (HW_VERSION_3, 0): 100.0,    # All FW: raw in centi-V (÷100)
+            (None, HW_VERSION_2, 0): 100.0,    # All FW: raw in centi-V (÷100)
+            (None, HW_VERSION_3, 0): 100.0,    # All FW: raw in centi-V (÷100)
         },
 
         # Battery current (A) - ALWAYS scaled by 100
         "bat_current": {
-            (HW_VERSION_2, 0): 100.0,    # All FW: raw in centi-A (÷100)
-            (HW_VERSION_3, 0): 100.0,    # All FW: raw in centi-A (÷100)
+            (None, HW_VERSION_2, 0): 100.0,    # All FW: raw in centi-A (÷100)
+            (None, HW_VERSION_3, 0): 100.0,    # All FW: raw in centi-A (÷100)
         },
     }
 
@@ -171,12 +187,13 @@ class CompatibilityMatrix:
         )
 
     def scale_value(self, value: float | None, field: str) -> float | None:
-        """Scale a raw API value based on firmware and hardware version.
+        """Scale a raw API value based on model, firmware, and hardware version.
 
         Lookup logic:
-        1. Find all entries for this hardware version and field
-        2. Select the highest firmware version <= actual device firmware
-        3. Return scaled value using that divisor
+        1. Filter to entries matching this hardware version.
+        2. Prefer entries that name our base model; fall back to wildcard
+           (model=None) entries only if no model-specific row applies.
+        3. Among the chosen tier, pick the highest firmware version <= ours.
 
         Args:
             value: Raw value from API
@@ -189,43 +206,35 @@ class CompatibilityMatrix:
         if value is None:
             return None
 
-        # If field not in matrix, return raw value (no scaling needed)
         if field not in self.SCALING_MATRIX:
             return value
 
         scaling_map = self.SCALING_MATRIX[field]
 
-        # Find all entries matching our hardware version
-        matching_entries = [
-            (fw_ver, divisor)
-            for (hw_ver, fw_ver), divisor in scaling_map.items()
-            if hw_ver == self.hardware_version
-        ]
+        # Entries that match our hardware version, partitioned by whether they
+        # are model-specific or wildcard. Each entry is reduced to (fw, divisor).
+        model_specific: list[tuple[int, float]] = []
+        wildcard: list[tuple[int, float]] = []
+        for (model, hw_ver, fw_ver), divisor in scaling_map.items():
+            if hw_ver != self.hardware_version:
+                continue
+            if model is None:
+                wildcard.append((fw_ver, divisor))
+            elif model == self.base_model:
+                model_specific.append((fw_ver, divisor))
 
-        # If no entries for this hardware version, return raw value
-        if not matching_entries:
-            _LOGGER.debug(
-                "No scaling entries for %s with hw=%s, using raw value",
-                field, self.hardware_version
-            )
-            return value
+        # Prefer model-specific tier when it has a row applicable to our firmware.
+        for tier in (model_specific, wildcard):
+            applicable = [(fw, d) for fw, d in tier if fw <= self.firmware_version]
+            if applicable:
+                _, divisor = max(applicable, key=lambda x: x[0])
+                return value / divisor
 
-        # Find the highest firmware version <= our actual firmware
-        applicable_entries = [
-            (fw_ver, divisor)
-            for fw_ver, divisor in matching_entries
-            if fw_ver <= self.firmware_version
-        ]
-
-        # If no applicable entry (our FW is older than any defined), return raw value
-        if not applicable_entries:
-            return value
-
-        # Get the entry with the highest firmware version
-        selected_fw_ver, divisor = max(applicable_entries, key=lambda x: x[0])
-        scaled = value / divisor
-
-        return scaled
+        _LOGGER.debug(
+            "No scaling entries for %s with model=%s, hw=%s, fw=%d; using raw value",
+            field, self.base_model, self.hardware_version, self.firmware_version,
+        )
+        return value
 
     def get_info(self) -> dict[str, Any]:
         """Get compatibility information for diagnostics.
